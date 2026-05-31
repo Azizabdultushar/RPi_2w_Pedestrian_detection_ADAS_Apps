@@ -494,3 +494,162 @@ TFLite Runtime
 Realtime Pedestrian Detection
 
 ---
+
+
+# 🚶 Pedestrian AI — Real-Time Detection on Raspberry Pi Zero 2W
+
+## Overview
+
+A real-time pedestrian detection system running on a **Raspberry Pi Zero 2W** (headless, SSH-only), streaming live annotated video to any browser on the local network using a TFLite INT8 model and Flask.
+
+\---
+
+## Hardware
+
+|Component|Details|
+|-|-|
+|Board|Raspberry Pi Zero 2W|
+|OS|Raspberry Pi OS — Debian 13 (Trixie), aarch64|
+|Kernel|Linux 6.12.75+rpt-rpi-v8|
+|Camera|OV5647 (Pi Camera v1) via CSI|
+|RAM|512 MB|
+
+\---
+
+## Software Stack
+
+|Component|Version|
+|-|-|
+|Python|3.11.13 (built from source via `altinstall`)|
+|tflite-runtime|2.14.0|
+|numpy|< 2.0 (pinned for tflite compatibility)|
+|Flask|latest|
+|OpenCV|`opencv-python-headless`|
+|Camera backend|`rpicam-vid` (libcamera CLI)|
+
+\---
+
+## Model
+
+|Property|Value|
+|-|-|
+|File|`best\_int8.tflite`|
+|Input shape|`\[1, 320, 320, 3]` — float32|
+|Output shape|`\[1, 5, 2100]` — float32|
+|Output format|YOLO-style: `\[x, y, w, h, confidence]` × 2100 candidates|
+|Confidence threshold|0.4 (tunable)|
+
+\---
+
+## Architecture
+
+```
+OV5647 Camera
+     │
+     ▼
+rpicam-vid (MJPEG, 640×480 @ 15fps)
+     │ stdout pipe
+     ▼
+Python 3.11 — OpenCV JPEG decoder
+     │
+     ├──► TFLite Interpreter (best\_int8.tflite)
+     │         └── Bounding box overlay (OpenCV)
+     │
+     ▼
+Flask MJPEG stream → Browser (http://192.168.31.194:5000)
+```
+
+\---
+
+## Key Challenges \& Solutions
+
+### 1\. Python 3.13 only in Debian 13 Trixie
+
+`python3.11` is not available via apt on Trixie. **Solution:** built Python 3.11.13 from source using `make altinstall`.
+
+### 2\. tflite-runtime incompatible with NumPy 2.x
+
+`tflite-runtime 2.14.0` was compiled against NumPy 1.x. **Solution:** pinned `numpy<2`.
+
+### 3\. picamera2 / libcamera compiled for Python 3.13 only
+
+`\_libcamera.cpython-313-aarch64-linux-gnu.so` cannot load in Python 3.11. **Solution:** bypassed picamera2 entirely — used `rpicam-vid` CLI piped via stdout, decoded with OpenCV.
+
+### 4\. No swap manager (dphys-swapfile missing)
+
+Debian 13 uses ZRAM instead. **Solution:** used `fallocate` + `mkswap` + `swapon` directly during the Python build, then removed the swapfile afterward.
+
+\---
+
+## Project Structure
+
+```
+\~/tflite-project/
+├── venv/                  # Python 3.11 virtual environment
+├── best\_int8.tflite       # Pedestrian detection model
+├── stream.py              # Flask + rpicam-vid streaming app
+├── test\_model.py          # Model verification script
+└── setup\_tflite.sh        # Full environment setup script
+```
+
+\---
+
+## Setup Script Summary (`setup\_tflite.sh`)
+
+1. Create 1GB swapfile (for compilation headroom)
+2. Install build dependencies via apt
+3. Download \& compile Python 3.11.13 from source
+4. Create venv and install `tflite-runtime`, `flask`, `opencv-python-headless`
+5. Verify tflite loads correctly
+6. Remove swapfile
+
+\---
+
+## Running the Stream
+
+```bash
+source \~/tflite-project/venv/bin/activate
+cd \~/tflite-project
+python stream.py
+```
+
+Open in any browser on the same network:
+
+```
+http://192.168.31.194:5000
+```
+
+To keep running after closing SSH:
+
+```bash
+screen -S stream
+python stream.py
+# Detach: Ctrl+A then D
+# Reattach: screen -r stream
+```
+
+\---
+
+## Inference Details
+
+* Frames captured at **640×480 @ 15fps** via `rpicam-vid`
+* Resized to **320×320** for model input
+* Inference runs on **every 2nd frame** to reduce CPU load on the Zero 2W
+* Output transposed from `\[1, 5, 2100]` → `\[2100, 5]`, filtered by confidence
+* Bounding boxes drawn in **green** with confidence score label
+
+\---
+
+## Tuning
+
+|Parameter|Location|Effect|
+|-|-|-|
+|`CONF\_THRESH`|`stream.py` line 10|Lower → more detections, higher → stricter|
+|`CAM\_W / CAM\_H`|`stream.py` line 11|Resolution (lower = faster)|
+|`--framerate`|`stream.py` rpicam cmd|Reduce if CPU overloads|
+|`skip % 2`|`stream.py` generate\_frames|Increase to skip more frames|
+
+
+
+
+
